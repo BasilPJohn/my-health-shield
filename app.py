@@ -80,10 +80,91 @@ with st.sidebar:
         st.success("Profile Updated")
         st.rerun()
 
+    # Mifflin-St Jeor Calculation
     bmr = (10 * u_weight) + (6.25 * u_height) - (5 * u_age) + 5
     daily_goal = int((bmr * 1.2) - (500 if u_weight > u_target else 0))
     st.metric("Daily Target", f"{daily_goal} kcal")
 
 # --- 4. MAIN INTERFACE ---
 st.title("Health Shield")
-st.write(f"Hello, **{u_name}**
+# FIXED LINE BELOW
+st.write(f"Hello, **{u_name}**")
+
+tabs = st.tabs(["🎙️ Voice Command", "✏️ Text Entry"])
+
+with tabs[0]:
+    audio = st.audio_input("Describe your meal")
+    if audio: 
+        st.session_state.meal_input = "User provided audio description of a meal."
+with tabs[1]:
+    txt = st.text_input("What did you eat?")
+    if txt: 
+        st.session_state.meal_input = txt
+
+if st.button("🚀 Analyze & Log"):
+    if st.session_state.meal_input:
+        with st.spinner("AI Analysis..."):
+            prompt = f"Dietitian Mode for {u_name}. Analyze meal. Return JSON ONLY: {{'food': str, 'calories': int, 'protein': int, 'carbs': int, 'fat': int, 'note': str}}"
+            
+            success = False
+            for model_id in ["gemini-2.0-flash", "gemini-1.5-flash"]:
+                try:
+                    resp = client.models.generate_content(
+                        model=model_id, 
+                        contents=[prompt, st.session_state.meal_input],
+                        config=types.GenerateContentConfig(response_mime_type="application/json")
+                    )
+                    data = json.loads(resp.text)
+                    success = True
+                    break
+                except Exception as e:
+                    if "429" in str(e):
+                        time.sleep(1)
+                        continue
+                    else:
+                        st.error(f"Error: {e}")
+                        break
+            
+            if success:
+                new_meal = pd.DataFrame([{
+                    "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "Meal": data['food'], "Calories": data['calories'],
+                    "Protein": data['protein'], "Carbs": data['carbs'],
+                    "Fat": data['fat'], "Note": data['note']
+                }])
+                history = conn.read(worksheet="Log")
+                conn.update(worksheet="Log", data=pd.concat([history, new_meal], ignore_index=True))
+                st.markdown(f"""<div class="apple-card"><h2 style='color:#007AFF'>{data['food']}</h2><h1>{data['calories']} kcal</h1><p>{data['note']}</p></div>""", unsafe_allow_html=True)
+                st.session_state.meal_input = None
+            else:
+                st.error("Engines busy. Try again in 1 min.")
+    else:
+        st.warning("Please enter a meal description.")
+
+# --- 5. DASHBOARD & JOURNAL ---
+st.divider()
+c1, c2 = st.columns(2)
+with c1:
+    st.markdown('<div class="apple-card">', unsafe_allow_html=True)
+    st.subheader("Weight History")
+    try:
+        w_df = conn.read(worksheet="WeightLog")
+        st.line_chart(w_df.set_index("Date")["Weight"], color="#007AFF")
+    except: st.info("No weight logs.")
+    st.markdown('</div>', unsafe_allow_html=True)
+with c2:
+    st.markdown('<div class="apple-card">', unsafe_allow_html=True)
+    st.subheader("Calorie Trends")
+    try:
+        l_df = conn.read(worksheet="Log")
+        l_df['Day'] = pd.to_datetime(l_df['Date']).dt.date
+        st.bar_chart(l_df.groupby('Day')['Calories'].sum(), color="#34C759")
+    except: st.info("No meal logs.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+st.subheader("📝 Recent Logs")
+try:
+    log_data = conn.read(worksheet="Log")
+    if not log_data.empty:
+        st.dataframe(log_data.tail(5), use_container_width=True, hide_index=True)
+except: pass
