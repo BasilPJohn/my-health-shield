@@ -7,8 +7,8 @@ import pandas as pd
 import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 
-# --- 1. UI ARCHITECTURE (Slate Grey Aesthetic) ---
-st.set_page_config(page_title="Shield OS v18", page_icon="🛡️", layout="wide")
+# --- 1. UI ARCHITECTURE (Slate Grey / Apple Aesthetic) ---
+st.set_page_config(page_title="Shield OS v19", page_icon="🛡️", layout="wide")
 
 st.markdown("""
     <style>
@@ -22,10 +22,10 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# UI Heartbeat (Refresh visuals every 15s)
+# Conserve Quota: Refresh visuals every 15s
 st_autorefresh(interval=15000, key="ui_refresh")
 
-# --- 2. DATA ENGINE (Cached to prevent 429 Sheets Errors) ---
+# --- 2. DATA ENGINE (Cached) ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 @st.cache_data(ttl=60)
@@ -40,15 +40,15 @@ def get_shield_data_cached():
     except Exception as e:
         return None, None, None, str(e)
 
-# --- 3. 2026 NEURAL FAILOVER ENGINE ---
+# --- 3. UNIVERSAL NEURAL FAILOVER ---
 def run_brain_task(prompt, user_context):
     api_key = st.secrets.get("GEMINI_API_KEY")
     if not api_key: return "❌ API Key Missing.", "None"
     
     client = genai.Client(api_key=api_key)
     
-    # 2026 Model Failover Sequence
-    models = ["gemini-3-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
+    # Stable 2026 Production Stack
+    models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
     
     for model_id in models:
         try:
@@ -58,12 +58,13 @@ def run_brain_task(prompt, user_context):
             )
             return resp.text, model_id
         except Exception as e:
-            # If rate limited (429), try the next model in the list
-            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+            err_str = str(e).upper()
+            # If model is not found or quota is hit, move to next model
+            if "NOT_FOUND" in err_str or "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
                 continue 
             return f"🛡️ Neural Core Error: `{str(e)}`", "Error"
             
-    return "🛡️ All Neural Links Saturated. Please wait 30 seconds for quota reset.", "None"
+    return "🛡️ Neural Core Offline. Check API Key or try again in 60 seconds.", "None"
 
 # --- 4. SESSION & AUTH ---
 if "page" not in st.session_state: st.session_state.page = "Dashboard"
@@ -124,17 +125,17 @@ if st.session_state.page == "Dashboard":
         r_cols[i].plotly_chart(fig, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 7. PAGE: BRAIN (Model Failover Active) ---
+# --- 7. PAGE: BRAIN (Stable Failover) ---
 elif st.session_state.page == "Brain":
     st.title("Neural Core")
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-    if prompt := st.chat_input("Input command..."):
+    if prompt := st.chat_input("Syncing with core..."):
         st.session_state.chat_history.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
 
-        with st.spinner("Cycling Neural Models..."):
+        with st.spinner("Cycling Models..."):
             context = f"User: {u_p['name']}, Weight: {u_p['weight']}kg."
             ai_msg, model_used = run_brain_task(prompt, context)
             
