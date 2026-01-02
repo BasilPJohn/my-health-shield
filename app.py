@@ -7,16 +7,16 @@ import pandas as pd
 import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 
-# --- 1. UI ARCHITECTURE (Slate Grey / iOS Aesthetic) ---
-st.set_page_config(page_title="Shield OS v14", page_icon="🛡️", layout="wide")
+# --- 1. UI ARCHITECTURE (Slate Grey / Apple Aesthetic) ---
+st.set_page_config(page_title="Shield OS v16", page_icon="🛡️", layout="wide")
 
 st.markdown("""
     <style>
-    /* Background: iOS Dark Mode Grey */
+    /* Background & Sidebar */
     .stApp { background-color: #1c1c1e; color: #ffffff; }
     [data-testid="stSidebar"] { background-color: #121212; border-right: 1px solid #3a3a3c; }
     
-    /* Tactical Sidebar Buttons */
+    /* Tactical Sidebar Buttons (Replaces Radio Buttons) */
     .stButton > button {
         width: 100%; border-radius: 12px; background-color: #2c2c2e;
         color: #ffffff; border: 1px solid #3a3a3c; padding: 14px;
@@ -40,38 +40,38 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# UI Heartbeat: Refresh visuals every 15s to conserve API quota
+# UI Heartbeat (Conserves API quota by refreshing every 15s)
 st_autorefresh(interval=15000, key="ui_refresh")
 
 # --- 2. QUOTA-SAFE DATA ENGINE ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-@st.cache_data(ttl=60) # Only hits Google Sheets once per minute
+@st.cache_data(ttl=60) # Only pulls from Google once every 60 seconds
 def get_shield_data_cached():
     try:
         log = conn.read(worksheet="Log", ttl=0)
         prof = conn.read(worksheet="Profile", ttl=0)
         weight = conn.read(worksheet="WeightLog", ttl=0)
         
-        # 🛡️ HARDENED HEADERS: Prevents KeyError by scrubbing spaces/case
+        # Scrub Headers: Standardize to lowercase and remove spaces (Prevents KeyError)
         for df in [log, prof, weight]:
             df.columns = [str(c).strip().lower() for c in df.columns]
             
-        return log, prof, weight
-    except Exception:
-        return None, None, None
+        return log, prof, weight, "Success"
+    except Exception as e:
+        return None, None, None, str(e)
 
 # --- 3. SESSION PERSISTENCE ---
 if "page" not in st.session_state: st.session_state.page = "Dashboard"
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
 if "chat_history" not in st.session_state: st.session_state.chat_history = []
 
-log_df, prof_df, weight_df = get_shield_data_cached()
+log_df, prof_df, weight_df, status_msg = get_shield_data_cached()
 
 # --- 4. AUTHENTICATION GATEWAY ---
 if not st.session_state.logged_in:
     if log_df is None:
-        st.error("🛡️ Shield Offline: API Rate Limit Hit. System cooling down... (Wait 60s)")
+        st.error(f"🛡️ Shield Offline: {status_msg}")
         st.stop()
         
     cols = st.columns([1, 1.5, 1])
@@ -89,16 +89,16 @@ if not st.session_state.logged_in:
                 else: st.error("Access Denied: Invalid Signature")
     st.stop()
 
-# Load specific user context
+# User Context
 u_p = prof_df[prof_df['email'] == st.session_state.user_email].iloc[0].to_dict()
 
-# --- 5. COMMAND CENTER (Sidebar) ---
+# --- 5. SIDEBAR NAVIGATION ---
 with st.sidebar:
     st.markdown("<h2 style='color:#007aff; margin-bottom:20px;'>SHIELD OPS</h2>", unsafe_allow_html=True)
     if st.button("📊 Health Analytics"): st.session_state.page = "Dashboard"
     if st.button("🧠 Shield Brain"): st.session_state.page = "Brain"
     st.divider()
-    if st.button("🔄 Force Sync Data"): 
+    if st.button("🔄 Sync Live Data"): 
         st.cache_data.clear()
         st.rerun()
     if st.button("🚪 Logout"):
@@ -107,9 +107,9 @@ with st.sidebar:
 
 # --- 6. PAGE: DASHBOARD ---
 if st.session_state.page == "Dashboard":
-    st.title(f"Status: {u_p.get('name', 'Operator')}")
+    st.title(f"Operator: {u_p.get('name', 'User')}")
     
-    # APPLE HEALTH STYLE RINGS
+    # APPLE HEALTH RINGS
     st.markdown('<div class="apple-card">', unsafe_allow_html=True)
     st.subheader("Nutrient Adherence")
     t_log = log_df[pd.to_datetime(log_df['date']).dt.date == datetime.now().date()]
@@ -131,49 +131,45 @@ if st.session_state.page == "Dashboard":
         r_cols[i].plotly_chart(fig, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # BIOMETRIC PATHWAY (WEIGHT CHART)
+    # BIOMETRIC PATHWAY
     st.markdown('<div class="apple-card">', unsafe_allow_html=True)
-    st.subheader("Biometric Pathway")
+    st.subheader("Weight Pathway")
     if not weight_df.empty:
         weight_df['date'] = pd.to_datetime(weight_df['date'])
         fig_w = go.Figure()
-        fig_w.add_trace(go.Scatter(x=weight_df['date'], y=weight_df['weight'], line=dict(color='#30d158', width=5), name="Actual"))
+        fig_w.add_trace(go.Scatter(x=weight_df['date'], y=weight_df['weight'], line=dict(color='#30d158', width=5)))
         fig_w.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                             font=dict(color="#ffffff"), xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="#3a3a3c"))
         st.plotly_chart(fig_w, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 7. PAGE: BRAIN (FIXED CHAT PERSISTENCE) ---
+# --- 7. PAGE: BRAIN (WITH DIAGNOSTICS) ---
 elif st.session_state.page == "Brain":
     st.title("Neural Core")
     
-    # Loop through and display history (prevents disappearing messages)
-    for message in st.session_state.chat_history:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+    for msg in st.session_state.chat_history:
+        with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-    if prompt := st.chat_input("Log a meal or ask a health question..."):
-        # Store user input
+    if prompt := st.chat_input("Log meal or ask health questions..."):
         st.session_state.chat_history.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+        with st.chat_message("user"): st.markdown(prompt)
 
-        # AI Response Logic
         with st.spinner("Neural Link Active..."):
             try:
-                client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-                context = f"User: {u_p['name']}, Target: {u_p['target_weight']}kg."
-                resp = client.models.generate_content(
-                    model="gemini-2.0-flash",
-                    contents=f"Context: {context}\nUser says: {prompt}"
-                )
-                ai_msg = resp.text
-            except Exception:
-                ai_msg = "🛡️ System Error: Unable to reach Neural Core."
+                api_key = st.secrets.get("GEMINI_API_KEY")
+                if not api_key:
+                    ai_msg = "❌ API KEY MISSING: Please add GEMINI_API_KEY to secrets."
+                else:
+                    client = genai.Client(api_key=api_key)
+                    # Including user context for personalized intelligence
+                    context = f"User {u_p['name']} weighs {u_p['weight']}kg with a target of {u_p['target_weight']}kg."
+                    resp = client.models.generate_content(
+                        model="gemini-2.0-flash",
+                        contents=f"{context}\n\nQuestion: {prompt}"
+                    )
+                    ai_msg = resp.text
+            except Exception as e:
+                ai_msg = f"🛡️ Neural Core Error: `{str(e)}`"
 
-        # Store and display AI response
         st.session_state.chat_history.append({"role": "assistant", "content": ai_msg})
-        with st.chat_message("assistant"):
-            st.markdown(ai_msg)
-        
-        st.rerun() # Refresh to clear input field
+        st.rerun()
