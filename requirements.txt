@@ -1,7 +1,7 @@
 streamlit
 google-genai
 google-api-core
-streamlit-gsheets-connection
+st-gsheets-connection
 pandas
 Pillow
 plotly
