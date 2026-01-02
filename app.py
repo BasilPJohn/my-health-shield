@@ -50,7 +50,7 @@ with tab3:
 if st.button("Analyze & Log"):
     if user_input:
         with st.spinner("Clinical analysis in progress..."):
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel('gemini-3-flash')
             
             prompt = f"""
             User Profile: {weight}kg, {goal} goal, {int(tdee)}kcal limit.
