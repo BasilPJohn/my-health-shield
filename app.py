@@ -78,7 +78,7 @@ with st.sidebar:
             conn.update(worksheet="WeightLog", data=combined_w)
         except:
             conn.update(worksheet="WeightLog", data=w_entry)
-        st.success("Cloud Synced")
+        st.success("Synced!")
         st.rerun()
 
     bmr = (10 * u_weight) + (6.25 * u_height) - (5 * u_age) + 5
@@ -94,7 +94,7 @@ tabs = st.tabs(["🎙️ Voice Command", "✏️ Text Entry"])
 with tabs[0]:
     audio = st.audio_input("Describe your meal")
     if audio: 
-        st.session_state.meal_input = "User provided audio description of a meal."
+        st.session_state.meal_input = "The user provided an audio description of their meal."
 with tabs[1]:
     txt = st.text_input("What did you eat?")
     if txt: 
@@ -103,10 +103,9 @@ with tabs[1]:
 if st.button("🚀 Analyze & Log"):
     if st.session_state.meal_input:
         with st.spinner("AI Analysis..."):
-            prompt = f"Dietitian Mode for {u_name}. Analyze meal. Return JSON ONLY: {{'food': str, 'calories': int, 'protein': int, 'carbs': int, 'fat': int, 'note': str}}"
+            prompt = f"Dietitian Mode. Analyze meal. Return JSON ONLY: {{'food': str, 'calories': int, 'protein': int, 'carbs': int, 'fat': int, 'note': str}}"
             
             success = False
-            # 2026 Production Models
             for model_id in ["gemini-2.0-flash", "gemini-2.0-flash-lite"]:
                 try:
                     resp = client.models.generate_content(
@@ -119,7 +118,6 @@ if st.button("🚀 Analyze & Log"):
                     break
                 except Exception as e:
                     if "404" in str(e) or "429" in str(e):
-                        time.sleep(1)
                         continue
                     else:
                         st.error(f"Error: {e}")
@@ -137,57 +135,54 @@ if st.button("🚀 Analyze & Log"):
                 st.markdown(f"""<div class="apple-card"><h2 style='color:#007AFF'>{data['food']}</h2><h1>{data['calories']} kcal</h1><p>{data['note']}</p></div>""", unsafe_allow_html=True)
                 st.session_state.meal_input = None
             else:
-                st.error("Engine Timeout. Please try again.")
+                st.error("Engine busy. Please try again in a moment.")
     else:
-        st.warning("Please enter a meal description.")
+        st.warning("Enter meal details first.")
 
 # --- 5. DASHBOARD & MACROS ---
 st.divider()
 c1, c2, c3 = st.columns(3)
 
-# Load Log Data
 try:
-    log_data = conn.read(worksheet="Log")
-    log_data['Date'] = pd.to_datetime(log_data['Date'])
+    log_df = conn.read(worksheet="Log")
+    log_df['Date'] = pd.to_datetime(log_df['Date'])
 except:
-    log_data = pd.DataFrame()
+    log_df = pd.DataFrame()
 
 with c1:
     st.markdown('<div class="apple-card">', unsafe_allow_html=True)
-    st.subheader("Weight Tracking")
+    st.subheader("Weight")
     try:
         w_df = conn.read(worksheet="WeightLog")
         st.line_chart(w_df.set_index("Date")["Weight"], color="#007AFF")
-    except: st.info("No weight logs.")
+    except: st.info("No weight data.")
     st.markdown('</div>', unsafe_allow_html=True)
 
 with c2:
     st.markdown('<div class="apple-card">', unsafe_allow_html=True)
-    st.subheader("Calorie Trends")
-    if not log_data.empty:
-        log_data['Day'] = log_data['Date'].dt.date
-        st.bar_chart(log_data.groupby('Day')['Calories'].sum(), color="#34C759")
+    st.subheader("Calories")
+    if not log_df.empty:
+        log_df['Day'] = log_df['Date'].dt.date
+        st.bar_chart(log_df.groupby('Day')['Calories'].sum(), color="#34C759")
     else: st.info("No meal logs.")
     st.markdown('</div>', unsafe_allow_html=True)
 
 with c3:
     st.markdown('<div class="apple-card">', unsafe_allow_html=True)
-    st.subheader("Macro Split")
-    if not log_data.empty:
-        # Sum of last 5 meals for recent macro balance
-        recent = log_data.tail(10)
+    st.subheader("Macros (Last 10)")
+    if not log_df.empty:
+        recent = log_df.tail(10)
         macros = pd.DataFrame({
             'Nutrient': ['Protein', 'Carbs', 'Fat'],
             'Grams': [recent['Protein'].sum(), recent['Carbs'].sum(), recent['Fat'].sum()]
         })
         fig = px.pie(macros, values='Grams', names='Nutrient', 
-                     color_discrete_sequence=['#007AFF', '#FF9500', '#FF3B30'],
-                     hole=0.4)
+                     color_discrete_sequence=['#007AFF', '#FF9500', '#FF3B30'], hole=0.5)
         fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
-    else: st.info("Log meals to see macros.")
+    else: st.info("No macro data.")
     st.markdown('</div>', unsafe_allow_html=True)
 
 st.subheader("📝 Recent Logs")
-if not log_data.empty:
-    st.dataframe(log_data.tail(5), use_container_width=True, hide_index=True)
+if not log_df.empty:
+    st.dataframe(log_df.tail(5), use_container_width=True, hide_index=True)
