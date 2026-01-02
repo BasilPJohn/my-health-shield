@@ -7,9 +7,13 @@ import json
 import pandas as pd
 from PIL import Image
 
-# --- 1. SESSION STATE & UI THEME ---
+# --- 1. SESSION STATE & THEME ---
 if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = False
+if "meal_input" not in st.session_state:
+    st.session_state.meal_input = None
+if "input_type" not in st.session_state:
+    st.session_state.input_type = None
 
 st.set_page_config(page_title="Health Shield", page_icon="🛡️", layout="wide")
 
@@ -34,13 +38,13 @@ def apply_apple_theme():
             padding: 0.7rem 2rem; font-weight: 600; width: 100%; border: none;
         }}
         [data-testid="stMetricValue"] {{ color: {accent} !important; font-weight: 800; }}
+        .stTable {{ background-color: {card_bg}; border-radius: 15px; overflow: hidden; }}
         </style>
     """, unsafe_allow_html=True)
 
 apply_apple_theme()
 
 # --- 2. CONNECTIONS ---
-# Uses Service Account from secrets for CRUD (Write) permissions
 client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 conn = st.connection("gsheets", type=GSheetsConnection)
 
@@ -53,7 +57,6 @@ with st.sidebar:
 
     st.divider()
     
-    # Load Profile Data
     try:
         profile_df = conn.read(worksheet="Profile")
         p = profile_df.iloc[0].to_dict() if not profile_df.empty else {"Name": "User", "Weight": 70.0, "Height": 170.0, "Age": 25, "Target_Weight": 65.0}
@@ -66,12 +69,10 @@ with st.sidebar:
     u_weight = st.number_input("Current Weight (kg)", value=float(p.get('Weight', 70.0)), step=0.1)
     u_target = st.number_input("Target Weight (kg)", value=float(p.get('Target_Weight', 65.0)), step=0.1)
     
-    if st.button("Save Profile & Update Weight"):
-        # 1. Update Profile Tab
+    if st.button("Update Profile & Log Weight"):
         new_p_df = pd.DataFrame([{"Name": u_name, "Age": u_age, "Height": u_height, "Weight": u_weight, "Target_Weight": u_target}])
         conn.update(worksheet="Profile", data=new_p_df)
         
-        # 2. Append to Weight History Tab
         w_entry = pd.DataFrame([{"Date": datetime.now().strftime("%Y-%m-%d"), "Weight": u_weight}])
         try:
             old_w = conn.read(worksheet="WeightLog")
@@ -79,76 +80,106 @@ with st.sidebar:
             conn.update(worksheet="WeightLog", data=combined_w)
         except:
             conn.update(worksheet="WeightLog", data=w_entry)
-            
-        st.success("Profile & Weight Logged!")
+        st.success("Cloud Synced")
         st.rerun()
 
-    # Medical Logic (Mifflin-St Jeor)
     bmr = (10 * u_weight) + (6.25 * u_height) - (5 * u_age) + 5
     daily_goal = int((bmr * 1.2) - (500 if u_weight > u_target else 0))
-    st.metric("Daily Calorie Target", f"{daily_goal} kcal")
+    st.metric("Daily Target", f"{daily_goal} kcal")
 
 # --- 4. MAIN INTERFACE ---
 st.title("Health Shield")
-st.write(f"Welcome back, **{u_name}**")
+st.write(f"Hello, **{u_name}**")
 
-# Interaction Tabs
-t1, t2, t3 = st.tabs(["📸 Photo", "🎙️ Voice", "✏️ Type"])
-source_data = None
+tabs = st.tabs(["📸 Photo", "🎙️ Voice", "✏️ Type"])
 
-with t1:
-    photo = st.camera_input("Snap your meal")
-    if photo: source_data = photo
-with t2:
-    voice = st.audio_input("Describe your meal")
-    if voice: source_data = "Voice input received"
-with t3:
-    txt = st.text_input("What's on the menu?")
-    if txt: source_data = txt
+with tabs[0]:
+    cam = st.camera_input("Meal Photo")
+    if cam: 
+        st.session_state.meal_input = cam
+        st.session_state.input_type = "image"
+with tabs[1]:
+    audio = st.audio_input("Describe your meal")
+    if audio: 
+        st.session_state.meal_input = "User provided audio meal description."
+        st.session_state.input_type = "text"
+with tabs[2]:
+    txt = st.text_input("Manual entry")
+    if txt: 
+        st.session_state.meal_input = txt
+        st.session_state.input_type = "text"
 
-if st.button("Log Meal Analysis"):
-    if source_data:
-        with st.spinner("Analyzing with Gemini 3 Flash..."):
-            prompt = f"Clinical Dietitian Mode. Name: {u_name}, Weight: {u_weight}kg. Analyze meal for Calories, Protein, Carbs, Fat. Return JSON ONLY."
+if st.button("🚀 Analyze & Log Meal"):
+    if st.session_state.meal_input:
+        with st.spinner("AI Analysis in progress..."):
+            prompt = f"Dietitian for {u_name}. Goal: {u_target}kg. Analyze meal. Return JSON: {{'food': str, 'calories': int, 'protein': int, 'carbs': int, 'fat': int, 'note': str}}"
             
-            # Model Fallback
-            models = ["gemini-2.0-flash", "gemini-1.5-flash"]
-            for m in models:
-                try:
-                    content = [prompt, Image.open(photo) if photo else source_data]
-                    resp = client.models.generate_content(model=m, contents=content, 
-                                                        config=types.GenerateContentConfig(response_mime_type="application/json"))
-                    data = json.loads(resp.text)
-                    
-                    # Log to Google Sheets
-                    meal_row = pd.DataFrame([{"Date": datetime.now().strftime("%Y-%m-%d %H:%M"), 
-                                              "Meal": data['food'], "Calories": data['calories'], "Note": data['note']}])
-                    history = conn.read(worksheet="Log")
-                    conn.update(worksheet="Log", data=pd.concat([history, meal_row], ignore_index=True))
-                    
-                    st.markdown(f"""<div class="apple-card"><h3>{data['food']}</h3><h1>{data['calories']} kcal</h1><p>{data['note']}</p></div>""", unsafe_allow_html=True)
-                    break
-                except: continue
+            try:
+                # Prepare Model Inputs
+                input_content = [prompt]
+                if st.session_state.input_type == "image":
+                    input_content.append(Image.open(st.session_state.meal_input))
+                else:
+                    input_content.append(st.session_state.meal_input)
 
-# --- 5. DATA VISUALIZATION ---
+                # Execute Gemini Call
+                resp = client.models.generate_content(
+                    model="gemini-2.0-flash", 
+                    contents=input_content,
+                    config=types.GenerateContentConfig(response_mime_type="application/json")
+                )
+                data = json.loads(resp.text)
+                
+                # Update Sheet
+                new_meal = pd.DataFrame([{
+                    "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "Meal": data['food'], "Calories": data['calories'],
+                    "Protein": data['protein'], "Carbs": data['carbs'],
+                    "Fat": data['fat'], "Note": data['note']
+                }])
+                history = conn.read(worksheet="Log")
+                conn.update(worksheet="Log", data=pd.concat([history, new_meal], ignore_index=True))
+                
+                st.markdown(f"""<div class="apple-card"><h2 style='color:#007AFF'>{data['food']}</h2><h1>{data['calories']} kcal</h1><p>{data['note']}</p></div>""", unsafe_allow_html=True)
+                
+                # Clear for next entry
+                st.session_state.meal_input = None
+            except Exception as e:
+                st.error(f"Analysis failed: {e}")
+    else:
+        st.warning("Please capture or describe a meal first.")
+
+# --- 5. DASHBOARD & HISTORY ---
 st.divider()
-col1, col2 = st.columns(2)
+c1, c2 = st.columns(2)
 
-with col1:
+with c1:
     st.markdown('<div class="apple-card">', unsafe_allow_html=True)
-    st.subheader("Weight Tracking")
+    st.subheader("Weight History")
     try:
         w_df = conn.read(worksheet="WeightLog")
         st.line_chart(w_df.set_index("Date")["Weight"], color="#007AFF")
-    except: st.info("Update your weight in the sidebar to see the chart.")
+    except: st.info("No weight data found.")
     st.markdown('</div>', unsafe_allow_html=True)
 
-with col2:
+with c2:
     st.markdown('<div class="apple-card">', unsafe_allow_html=True)
     st.subheader("Calorie Trends")
     try:
         l_df = conn.read(worksheet="Log")
         l_df['Day'] = pd.to_datetime(l_df['Date']).dt.date
         st.bar_chart(l_df.groupby('Day')['Calories'].sum(), color="#34C759")
-    except: st.info("Log your first meal to see trends.")
+    except: st.info("No meal data found.")
     st.markdown('</div>', unsafe_allow_html=True)
+
+st.subheader("📝 Today's Meal Journal")
+try:
+    all_meals = conn.read(worksheet="Log")
+    today = datetime.now().strftime("%Y-%m-%d")
+    today_meals = all_meals[all_meals['Date'].str.contains(today)]
+    if not today_meals.empty:
+        st.dataframe(today_meals[['Date', 'Meal', 'Calories', 'Note']], use_container_width=True, hide_index=True)
+    else:
+        st.write("No meals logged today yet.")
+except:
+    st.write("Start logging to see your journal.")
