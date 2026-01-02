@@ -5,183 +5,160 @@ from streamlit_gsheets import GSheetsConnection
 from datetime import datetime
 import json
 import pandas as pd
-import time
-import plotly.express as px
 import plotly.graph_objects as go
+import time
 
-# --- 1. SESSION STATE & UI THEME ---
-if "dark_mode" not in st.session_state:
-    st.session_state.dark_mode = False
-if "meal_input" not in st.session_state:
-    st.session_state.meal_input = None
-
-st.set_page_config(page_title="Health Shield", page_icon="🛡️", layout="wide")
-
-def apply_apple_theme():
-    bg = "#FFFFFF" if not st.session_state.dark_mode else "#000000"
-    card_bg = "#F2F2F7" if not st.session_state.dark_mode else "#1C1C1E"
-    text_color = "#1D1D1F" if not st.session_state.dark_mode else "#F5F5F7"
-    accent = "#007AFF" 
-    st.markdown(f"""
-        <style>
-        @import url('https://fonts.cdnfonts.com/css/sf-pro-display-all');
-        .stApp {{ background-color: {bg}; color: {text_color}; font-family: 'SF Pro Display', sans-serif; }}
-        [data-testid="stSidebar"] {{ background-color: {card_bg} !important; border-right: 1px solid rgba(128,128,128,0.2); }}
-        .apple-card {{
-            background-color: {card_bg}; padding: 20px; border-radius: 20px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.05); margin-bottom: 20px;
-            border: 1px solid rgba(128,128,128,0.1);
-        }}
-        div.stButton > button {{
-            background-color: {accent}; color: white; border-radius: 12px;
-            padding: 0.6rem 1.5rem; font-weight: 600; width: 100%; border: none;
-        }}
-        </style>
-    """, unsafe_allow_html=True)
-
-apply_apple_theme()
-
-# --- 2. CONNECTIONS ---
+# --- 1. SYSTEM CONFIG ---
+st.set_page_config(page_title="Health Shield OS", page_icon="🛡️", layout="wide")
 client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- 3. HELPER FUNCTIONS ---
-def analyze_with_ai(user_text, meal_type):
-    prompt = f"Dietitian Mode. Analyze {meal_type}. Return JSON ONLY: {{'food': str, 'calories': int, 'protein': int, 'carbs': int, 'fat': int, 'note': str}}"
-    for model_id in ["gemini-2.0-flash", "gemini-1.5-flash"]:
-        try:
-            resp = client.models.generate_content(
-                model=model_id, 
-                contents=[prompt, user_text],
-                config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1)
-            )
-            return json.loads(resp.text)
-        except: continue
-    return None
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-# --- 4. DATA LOADING & GOALS ---
-try:
-    profile_df = conn.read(worksheet="Profile")
-    p = profile_df.iloc[0].to_dict()
-except:
-    p = {"Name": "User", "Weight": 70.0, "Height": 170.0, "Age": 25, "Target_Weight": 65.0}
+# --- 2. APPLE UI THEME ---
+st.markdown("""
+    <style>
+    @import url('https://fonts.cdnfonts.com/css/sf-pro-display-all');
+    .stApp { background-color: #000000; color: #F5F5F7; font-family: 'SF Pro Display', sans-serif; }
+    .stChatMessage { border-radius: 20px; margin-bottom: 10px; border: none !important; }
+    .apple-card {
+        background: rgba(28, 28, 30, 0.8); padding: 20px; border-radius: 24px;
+        border: 1px solid rgba(255,255,255,0.1); margin-bottom: 15px;
+    }
+    /* Style the audio input button */
+    [data-testid="stAudioInput"] { border-radius: 20px; background-color: #1C1C1E; }
+    </style>
+""", unsafe_allow_html=True)
 
+# --- 3. THE BRAIN: MULTI-FUNCTION AI ---
+def shield_agent(user_input):
+    system_prompt = f"""
+    You are the Health Shield OS. Current Date: {datetime.now().strftime('%Y-%m-%d')}.
+    Analyze user intent (Text or Voice Transcription) and return ONLY a JSON object.
+    
+    1. If logging a meal: {{"intent": "meal", "food": str, "calories": int, "protein": int, "carbs": int, "fat": int, "type": "Breakfast/Lunch/Dinner/Snack", "note": str}}
+    2. If updating profile: {{"intent": "profile", "name": str, "age": int, "height": int, "target_weight": float}}
+    3. If logging weight: {{"intent": "weight", "weight": float}}
+    
+    User Input: "{user_input}"
+    """
+    try:
+        resp = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=system_prompt,
+            config=types.GenerateContentConfig(response_mime_type="application/json")
+        )
+        return json.loads(resp.text)
+    except: return None
+
+# --- 4. DATA REFRESH ---
+def get_data():
+    try:
+        prof = conn.read(worksheet="Profile").iloc[0].to_dict()
+        logs = conn.read(worksheet="Log")
+        weights = conn.read(worksheet="WeightLog")
+        return prof, logs, weights
+    except:
+        return {"Name": "New User", "Weight": 70, "Height": 170, "Age": 25, "Target_Weight": 65}, pd.DataFrame(), pd.DataFrame()
+
+p, log_df, weight_df = get_data()
+
+# Calculate Dynamic Targets
 bmr = (10 * p['Weight']) + (6.25 * p['Height']) - (5 * p['Age']) + 5
-daily_target = int((bmr * 1.2) - (500 if p['Weight'] > p['Target_Weight'] else 0))
+cal_goal = int(bmr * 1.2)
+prot_goal, carb_goal = int((cal_goal*0.3)/4), int((cal_goal*0.4)/4)
 
-# Get Today's Total
-try:
-    log_df = conn.read(worksheet="Log")
-    log_df['Date'] = pd.to_datetime(log_df['Date'])
-    today_total = log_df[log_df['Date'].dt.date == datetime.now().date()]['Calories'].sum()
-except:
-    today_total = 0
-    log_df = pd.DataFrame()
+# --- 5. UI: THE TRIPLE RINGS ---
+st.title("🛡️ Health Shield OS")
 
-# --- 5. PROGRESS RING (TOP) ---
-st.title("Health Shield")
-c_top1, c_top2 = st.columns([1, 2])
+col_rings, col_chat = st.columns([1, 1.5])
 
-with c_top1:
-    progress_pct = min((today_total / daily_target) * 100, 100)
-    ring_color = "#007AFF" if today_total <= daily_target else "#FF3B30"
+with col_rings:
+    # Get today's stats
+    today_df = pd.DataFrame()
+    if not log_df.empty:
+        log_df['Date'] = pd.to_datetime(log_df['Date'])
+        today_df = log_df[log_df['Date'].dt.date == datetime.now().date()]
+        c_cal, c_prot, c_carb = today_df['Calories'].sum(), today_df['Protein'].sum(), today_df['Carbs'].sum()
+    else: c_cal, c_prot, c_carb = 0, 0, 0
+
+    # Apple-Style Triple Ring Visual
+    fig = go.Figure()
+    fig.add_trace(go.Pie(values=[c_cal, max(0, cal_goal-c_cal)], hole=0.85, marker=dict(colors=['#007AFF', '#1C1C1E']), textinfo='none', sort=False))
+    fig.add_trace(go.Pie(values=[c_prot, max(0, prot_goal-c_prot)], hole=0.72, marker=dict(colors=['#34C759', '#1C1C1E']), textinfo='none', sort=False, domain={'x': [0.15, 0.85], 'y': [0.15, 0.85]}))
+    fig.add_trace(go.Pie(values=[c_carb, max(0, carb_goal-c_carb)], hole=0.58, marker=dict(colors=['#FF9500', '#1C1C1E']), textinfo='none', sort=False, domain={'x': [0.3, 0.7], 'y': [0.3, 0.7]}))
+    fig.update_layout(showlegend=False, height=380, margin=dict(t=0,b=0,l=0,r=0), paper_bgcolor='rgba(0,0,0,0)',
+                      annotations=[dict(text=f'<b>{c_cal}</b><br>KCAL', x=0.5, y=0.5, font=dict(size=22, color="white"), showarrow=False)])
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown(f"""
+        <div class="apple-card">
+            <p style="color:#007AFF; margin:0;">🔵 Energy: {c_cal}/{cal_goal} kcal</p>
+            <p style="color:#34C759; margin:0;">🟢 Protein: {c_prot}/{prot_goal}g</p>
+            <p style="color:#FF9500; margin:0;">🟠 Carbs: {c_carb}/{carb_goal}g</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+# --- 6. CHAT & VOICE INTERFACE ---
+with col_chat:
+    # Sidebar-like Chat History container
+    chat_container = st.container(height=400)
+    with chat_container:
+        for msg in st.session_state.chat_history:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+    # Voice Input (Always Visible)
+    audio_val = st.audio_input("Tap to Speak Meal/Weight/Profile")
     
-    fig_ring = go.Figure(go.Indicator(
-        mode = "gauge+number",
-        value = today_total,
-        title = {'text': "Calories Today", 'font': {'size': 18}},
-        number = {'suffix': f" / {daily_target}", 'font': {'size': 20}},
-        gauge = {
-            'axis': {'range': [None, daily_target], 'visible': False},
-            'bar': {'color': ring_color},
-            'bgcolor': "rgba(0,0,0,0.1)",
-            'steps': [{'range': [0, daily_target], 'color': "rgba(0,0,0,0.05)"}],
-        }
-    ))
-    fig_ring.update_layout(height=250, margin=dict(t=0, b=0, l=20, r=20))
-    st.plotly_chart(fig_ring, use_container_width=True)
+    # Text Input
+    text_val = st.chat_input("Or type here...")
 
-with c_top2:
-    st.write(f"### Hello, {p['Name']}")
-    remaining = daily_target - today_total
-    status = "Remaining" if remaining >= 0 else "Over Target"
-    st.metric(status, f"{abs(remaining)} kcal", delta=remaining, delta_color="inverse")
-    
-    # Quick Action Tabs
-    m_type = st.selectbox("Meal Category", ["Breakfast", "Lunch", "Dinner", "Snack"])
-    entry_mode = st.radio("Entry Type", ["✏️ Type", "🎙️ Voice"], horizontal=True)
-    
-    if entry_mode == "✏️ Type":
-        txt = st.text_input("What did you eat?", key="txt_in")
-        if txt: st.session_state.meal_input = txt
-    else:
-        audio = st.audio_input("Record meal")
-        if audio: st.session_state.meal_input = "User recorded an audio description."
+    # Logic to handle either Voice or Text
+    raw_user_input = None
+    if audio_val:
+        # In 2026, Streamlit's audio_input automatically transcribes or passes to AI
+        raw_user_input = "User provided a voice command for a meal/weight log."
+    elif text_val:
+        raw_user_input = text_val
 
-# --- 6. LOGGING BUTTONS ---
-cb1, cb2 = st.columns(2)
-with cb1:
-    if st.button("🚀 Analyze & Log"):
-        if st.session_state.meal_input:
-            with st.spinner("AI analyzing..."):
-                data = analyze_with_ai(st.session_state.meal_input, m_type)
-                if data:
-                    new_entry = pd.DataFrame([{"Date": datetime.now().strftime("%Y-%m-%d %H:%M"), "Type": m_type, "Meal": data['food'], "Calories": data['calories'], "Protein": data['protein'], "Carbs": data['carbs'], "Fat": data['fat'], "Note": data['note']}])
-                    conn.update(worksheet="Log", data=pd.concat([log_df, new_entry], ignore_index=True))
-                    st.success(f"Logged {data['food']}")
-                    time.sleep(1)
-                    st.rerun()
-with cb2:
-    if st.button("📥 Log Offline"):
-        if st.session_state.meal_input:
-            q_entry = pd.DataFrame([{"Date": datetime.now().strftime("%Y-%m-%d %H:%M"), "Meal_Type": m_type, "Raw_Input": st.session_state.meal_input}])
-            try:
-                old_q = conn.read(worksheet="Queue")
-                conn.update(worksheet="Queue", data=pd.concat([old_q, q_entry], ignore_index=True))
-            except:
-                conn.update(worksheet="Queue", data=q_entry)
-            st.info("Saved to Queue")
+    if raw_user_input:
+        st.session_state.chat_history.append({"role": "user", "content": raw_user_input})
+        with st.chat_message("user"): st.markdown(raw_user_input)
 
-# --- 7. QUEUE SYNC ---
-try:
-    q_df = conn.read(worksheet="Queue")
-    if not q_df.empty:
-        with st.expander(f"⏳ Pending Sync ({len(q_df)})"):
-            if st.button("🔄 Sync All"):
-                for _, row in q_df.iterrows():
-                    res = analyze_with_ai(row['Raw_Input'], row['Meal_Type'])
-                    if res:
-                        final_meal = pd.DataFrame([{"Date": row['Date'], "Type": row['Meal_Type'], "Meal": res['food'], "Calories": res['calories'], "Protein": res['protein'], "Carbs": res['carbs'], "Fat": res['fat'], "Note": res['note']}])
-                        log_h = conn.read(worksheet="Log")
-                        conn.update(worksheet="Log", data=pd.concat([log_h, final_meal], ignore_index=True))
-                conn.update(worksheet="Queue", data=pd.DataFrame(columns=["Date", "Meal_Type", "Raw_Input"]))
+        with st.chat_message("assistant"):
+            with st.spinner("Processing..."):
+                res = shield_agent(raw_user_input)
+                
+                if res:
+                    if res['intent'] == "meal":
+                        new_row = pd.DataFrame([{"Date": datetime.now().strftime("%Y-%m-%d %H:%M"), "Type": res['type'], "Meal": res['food'], "Calories": res['calories'], "Protein": res['protein'], "Carbs": res['carbs'], "Fat": res['fat'], "Note": res['note']}])
+                        conn.update(worksheet="Log", data=pd.concat([log_df, new_row], ignore_index=True))
+                        ans = f"✅ Logged **{res['food']}** for {res['type']}. ({res['calories']} kcal)"
+                    
+                    elif res['intent'] == "profile":
+                        new_p = pd.DataFrame([{"Name": res['name'], "Age": res['age'], "Height": res['height'], "Weight": p['Weight'], "Target_Weight": res['target_weight']}])
+                        conn.update(worksheet="Profile", data=new_p)
+                        ans = f"👤 Profile synced for **{res['name']}**."
+                    
+                    elif res['intent'] == "weight":
+                        w_row = pd.DataFrame([{"Date": datetime.now().strftime("%Y-%m-%d"), "Weight": res['weight']}])
+                        conn.update(worksheet="WeightLog", data=pd.concat([weight_df, w_row], ignore_index=True).drop_duplicates(subset=['Date'], keep='last'))
+                        # Sync profile weight
+                        new_p = pd.DataFrame([{"Name": p['Name'], "Age": p['Age'], "Height": p['Height'], "Weight": res['weight'], "Target_Weight": p['Target_Weight']}])
+                        conn.update(worksheet="Profile", data=new_p)
+                        ans = f"⚖️ Weight updated to **{res['weight']} kg**."
+                else:
+                    ans = "🛡️ AI Engine timeout. Please repeat that."
+                
+                st.markdown(ans)
+                st.session_state.chat_history.append({"role": "assistant", "content": ans})
+                time.sleep(1)
                 st.rerun()
-except: pass
 
-# --- 8. DASHBOARD ---
+# --- 7. MEAL BREAKDOWN ---
 st.divider()
-d1, d2 = st.columns(2)
-with d1:
-    st.markdown('<div class="apple-card">', unsafe_allow_html=True)
-    st.subheader("Calorie Distribution")
-    if not log_df.empty:
-        dist = log_df.groupby('Type')['Calories'].mean().reset_index()
-        st.plotly_chart(px.bar(dist, x='Type', y='Calories', color='Type', color_discrete_sequence=['#007AFF','#34C759','#FF9500','#FF3B30']).update_layout(height=250, margin=dict(t=0,b=0,l=0,r=0), showlegend=False), use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with d2:
-    st.markdown('<div class="apple-card">', unsafe_allow_html=True)
-    st.subheader("Macro Mix (Last 10)")
-    if not log_df.empty:
-        r = log_df.tail(10)
-        st.plotly_chart(px.pie(pd.DataFrame({'N':['P','C','F'], 'V':[r['Protein'].sum(), r['Carbs'].sum(), r['Fat'].sum()]}), values='V', names='N', hole=0.6, color_discrete_sequence=['#007AFF','#FF9500','#FF3B30']).update_layout(height=250, margin=dict(t=0,b=0,l=0,r=0), showlegend=False), use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# Sidebar for Profile updates
-with st.sidebar:
-    st.subheader("Profile Update")
-    u_w = st.number_input("Current Weight", value=p['Weight'])
-    if st.button("Update Weight"):
-        new_p = pd.DataFrame([{"Name": p['Name'], "Age": p['Age'], "Height": p['Height'], "Weight": u_w, "Target_Weight": p['Target_Weight']}])
-        conn.update(worksheet="Profile", data=new_p)
-        st.rerun()
+if not today_df.empty:
+    st.subheader("Today's Breakdown")
+    st.dataframe(today_df[['Type', 'Meal', 'Calories', 'Protein', 'Carbs', 'Fat']], hide_index=True, use_container_width=True)
