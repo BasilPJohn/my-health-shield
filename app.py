@@ -1,12 +1,10 @@
 import streamlit as st
 from google import genai
 from google.genai import types
-import google.api_core.exceptions as google_exceptions
 from streamlit_gsheets import GSheetsConnection
 from datetime import datetime
 import json
 import pandas as pd
-from PIL import Image
 import time
 
 # --- 1. SESSION STATE & UI THEME ---
@@ -14,8 +12,6 @@ if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = False
 if "meal_input" not in st.session_state:
     st.session_state.meal_input = None
-if "input_type" not in st.session_state:
-    st.session_state.input_type = None
 
 st.set_page_config(page_title="Health Shield", page_icon="🛡️", layout="wide")
 
@@ -81,7 +77,7 @@ with st.sidebar:
             conn.update(worksheet="WeightLog", data=combined_w)
         except:
             conn.update(worksheet="WeightLog", data=w_entry)
-        st.success("Cloud Synced")
+        st.success("Profile Updated")
         st.rerun()
 
     bmr = (10 * u_weight) + (6.25 * u_height) - (5 * u_age) + 5
@@ -90,87 +86,4 @@ with st.sidebar:
 
 # --- 4. MAIN INTERFACE ---
 st.title("Health Shield")
-tabs = st.tabs(["📸 Photo", "🎙️ Voice", "✏️ Type"])
-
-with tabs[0]:
-    cam = st.camera_input("Meal Photo")
-    if cam: 
-        st.session_state.meal_input = cam
-        st.session_state.input_type = "image"
-with tabs[1]:
-    audio = st.audio_input("Describe meal")
-    if audio: 
-        st.session_state.meal_input = "User provided audio description."
-        st.session_state.input_type = "text"
-with tabs[2]:
-    txt = st.text_input("Manual entry")
-    if txt: 
-        st.session_state.meal_input = txt
-        st.session_state.input_type = "text"
-
-if st.button("🚀 Analyze & Log Meal"):
-    if st.session_state.meal_input:
-        with st.spinner("Analyzing (Managing Quota)..."):
-            prompt = f"Dietitian for {u_name}. Analyze meal. Return JSON: {{'food': str, 'calories': int, 'protein': int, 'carbs': int, 'fat': int, 'note': str}}"
-            
-            # Prepare Inputs
-            input_content = [prompt]
-            if st.session_state.input_type == "image":
-                input_content.append(Image.open(st.session_state.meal_input))
-            else:
-                input_content.append(st.session_state.meal_input)
-
-            # --- SMART QUOTA HANDLING ---
-            success = False
-            models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash"]
-            
-            for model_id in models_to_try:
-                try:
-                    resp = client.models.generate_content(
-                        model=model_id, 
-                        contents=input_content,
-                        config=types.GenerateContentConfig(response_mime_type="application/json")
-                    )
-                    data = json.loads(resp.text)
-                    success = True
-                    break
-                except Exception as e:
-                    if "429" in str(e):
-                        st.warning(f"{model_id} quota full. Switching engines...")
-                        time.sleep(2) # Brief pause before trying fallback
-                        continue
-                    else:
-                        st.error(f"Error: {e}")
-                        break
-            
-            if success:
-                new_meal = pd.DataFrame([{"Date": datetime.now().strftime("%Y-%m-%d %H:%M"), "Meal": data['food'], "Calories": data['calories'], "Protein": data['protein'], "Carbs": data['carbs'], "Fat": data['fat'], "Note": data['note']}])
-                history = conn.read(worksheet="Log")
-                conn.update(worksheet="Log", data=pd.concat([history, new_meal], ignore_index=True))
-                st.markdown(f"""<div class="apple-card"><h2 style='color:#007AFF'>{data['food']}</h2><h1>{data['calories']} kcal</h1><p>{data['note']}</p></div>""", unsafe_allow_html=True)
-                st.session_state.meal_input = None
-            else:
-                st.error("All AI engines are busy. Please wait 60 seconds and try again.")
-    else:
-        st.warning("Please provide a meal input first.")
-
-# --- 5. DASHBOARD ---
-st.divider()
-c1, c2 = st.columns(2)
-with c1:
-    st.markdown('<div class="apple-card">', unsafe_allow_html=True)
-    st.subheader("Weight Tracking")
-    try:
-        w_df = conn.read(worksheet="WeightLog")
-        st.line_chart(w_df.set_index("Date")["Weight"], color="#007AFF")
-    except: st.info("No weight data.")
-    st.markdown('</div>', unsafe_allow_html=True)
-with c2:
-    st.markdown('<div class="apple-card">', unsafe_allow_html=True)
-    st.subheader("Calorie Trends")
-    try:
-        l_df = conn.read(worksheet="Log")
-        l_df['Day'] = pd.to_datetime(l_df['Date']).dt.date
-        st.bar_chart(l_df.groupby('Day')['Calories'].sum(), color="#34C759")
-    except: st.info("No meal data.")
-    st.markdown('</div>', unsafe_allow_html=True)
+st.write(f"Hello, **{u_name}**
