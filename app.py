@@ -1,18 +1,21 @@
 import streamlit as st
+from google import genai  # New 2026 Library
+from google.genai import types
 from streamlit_gsheets import GSheetsConnection
-import google.generativeai as genai
 from datetime import datetime
 import json
 import pandas as pd
+from PIL import Image
 
-# 1. API & Sheet Connection
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+# 1. Setup - Page Config for iPhone
+st.set_page_config(page_title="Health Shield", page_icon="🛡️", layout="centered")
+
+# 2. Connections
+# Ensure your Streamlit Secrets has: GEMINI_API_KEY and [connections.gsheets]
+client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# 2. Page Config for iPhone
-st.set_page_config(page_title="Health Shield", page_icon="🛡️")
-
-# 3. Sidebar Profile (Calculates your personal health limits)
+# 3. Sidebar: User Profile & Medical Math
 with st.sidebar:
     st.header("👤 Your Profile")
     weight = st.number_input("Weight (kg)", value=70.0)
@@ -20,88 +23,94 @@ with st.sidebar:
     age = st.number_input("Age", value=25)
     goal = st.selectbox("Goal", ["Weight Loss", "Maintain", "Muscle Gain"])
     
-    # Mifflin-St Jeor Formula
+    # Mifflin-St Jeor Calculation
     bmr = (10 * weight) + (6.25 * height) - (5 * age) + 5
-    tdee = bmr * 1.2 # Sedentary multiplier
-    st.info(f"Target: {int(tdee)} kcal/day")
+    tdee = int(bmr * 1.2) # Baseline Activity
+    st.metric("Daily Target", f"{tdee} kcal")
 
-# 4. Input Methods
-st.title("🛡️ Health Shield")
+# 4. Input Tabs
+st.title("🛡️ AI Health Shield")
 tab1, tab2, tab3 = st.tabs(["📸 Photo", "🎤 Voice", "⌨️ Text"])
 
-user_input = None
-is_image = False
+user_content = None
 
 with tab1:
-    img_file = st.camera_input("Take a photo of your meal")
-    if img_file:
-        user_input = img_file
-        is_image = True
-with tab2:
-    audio_file = st.audio_input("Describe your meal")
-    if audio_file:
-        user_input = "The user provided a voice description of their meal."
-with tab3:
-    text_input = st.text_input("Type your meal (e.g. 2 eggs and toast)")
-    if text_input:
-        user_input = text_input
+    cam_img = st.camera_input("Snap your meal")
+    if cam_img:
+        user_content = Image.open(cam_img)
 
-# 5. Analysis Engine
-if st.button("Analyze & Log"):
-    if user_input:
-        with st.spinner("Clinical analysis in progress..."):
-            model = genai.GenerativeModel('gemini-3-flash')
+with tab2:
+    voice_data = st.audio_input("Describe your meal")
+    if voice_data:
+        # Note: In 2026 SDK, audio is handled via parts
+        user_content = "The user provided a voice description of a meal."
+
+with tab3:
+    text_msg = st.text_input("Describe what you ate...")
+    if text_msg:
+        user_content = text_msg
+
+# 5. Analysis Logic
+if st.button("🚀 Analyze & Log Meal"):
+    if user_content:
+        with st.spinner("Gemini 3 is evaluating health risks..."):
             
+            # Clinical Prompt
             prompt = f"""
-            User Profile: {weight}kg, {goal} goal, {int(tdee)}kcal limit.
-            Analyze this meal. Provide: Calories, Protein(g), Carbs(g), Fat(g).
-            Provide a 'Clinical Note' regarding health/additives.
-            Return ONLY JSON:
-            {{"food": "name", "calories": 0, "protein": 0, "carbs": 0, "fat": 0, "note": "..."}}
+            System: Act as a Clinical Dietitian. User: {weight}kg, Goal: {goal}, Limit: {tdee}kcal.
+            Task: Analyze the input. Provide Calories, Protein(g), Carbs(g), Fat(g).
+            Clinical Note: Mention additives, sodium risks, or goal alignment.
+            IMPORTANT: Return ONLY valid JSON.
+            JSON Format: {{"food": "name", "calories": 0, "protein": 0, "carbs": 0, "fat": 0, "note": "..."}}
             """
             
-            if is_image:
-                from PIL import Image
-                img = Image.open(user_input)
-                response = model.generate_content([prompt, img])
-            else:
-                response = model.generate_content(prompt + f"\nInput: {user_input}")
-            
             try:
-                data = json.loads(response.text.replace('```json', '').replace('```', ''))
+                # Using the stable Gemini 3 Flash model
+                response = client.models.generate_content(
+                    model="gemini-3-flash",
+                    contents=[prompt, user_content],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json"
+                    )
+                )
                 
-                # Show results to user
-                st.metric("Calories", f"{data['calories']} kcal")
-                st.warning(f"⚕️ Clinical Note: {data['note']}")
+                # Parse JSON
+                res_data = json.loads(response.text)
+                
+                # Display results
+                st.subheader(f"Meal: {res_data['food']}")
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Calories", f"{res_data['calories']} kcal")
+                col2.metric("Protein", f"{res_data['protein']}g")
+                col3.metric("Goal Status", "Aligned" if res_data['calories'] < (tdee/3) else "High")
+                
+                st.warning(f"⚕️ Clinical Note: {res_data['note']}")
                 
                 # Save to Google Sheets
                 new_row = pd.DataFrame([{
                     "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "Meal": data['food'],
-                    "Calories": data['calories'],
-                    "Protein": data['protein'],
-                    "Carbs": data['carbs'],
-                    "Fat": data['fat'],
-                    "Clinical_Note": data['note']
+                    "Meal": res_data['food'],
+                    "Calories": res_data['calories'],
+                    "Protein": res_data['protein'],
+                    "Note": res_data['note']
                 }])
                 
-                # Append to your Google Sheet
-                existing_data = conn.read(worksheet="Log")
-                updated_df = pd.concat([existing_data, new_row], ignore_index=True)
-                conn.update(worksheet="Log", data=updated_df)
-                st.success("Meal logged successfully!")
-                
-            except Exception as e:
-                st.error(f"Error parsing data: {e}")
-    else:
-        st.error("Please provide an input first!")
+                existing = conn.read(worksheet="Log")
+                updated = pd.concat([existing, new_row], ignore_index=True)
+                conn.update(worksheet="Log", data=updated)
+                st.success("Successfully logged to Sheets!")
 
-# 6. Trend Chart
+            except Exception as e:
+                st.error(f"Analysis failed. Ensure your API Key is valid. Error: {e}")
+    else:
+        st.info("Please provide a photo, voice, or text input first.")
+
+# 6. Trends
 st.divider()
-st.subheader("📈 Daily Calorie Trend")
+st.subheader("📈 Your Calorie Trend")
 try:
-    log_data = conn.read(worksheet="Log")
-    if not log_data.empty:
-        st.line_chart(log_data.set_index("Date")["Calories"])
+    history = conn.read(worksheet="Log")
+    if not history.empty:
+        st.line_chart(history.set_index("Date")["Calories"])
 except:
-    st.info("Log some meals to see your trends!")
+    st.write("Log your first meal to see trends!")
