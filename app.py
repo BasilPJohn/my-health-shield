@@ -7,26 +7,27 @@ import pandas as pd
 import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 
-# --- 1. SYSTEM CONFIG & STYLING ---
-st.set_page_config(page_title="Shield OS v3", page_icon="🛡️", layout="wide")
+# --- 1. SETTINGS & STYLING ---
+st.set_page_config(page_title="Shield OS v4", page_icon="🛡️", layout="wide")
 
-# Custom UI Styling
 st.markdown("""
     <style>
     .main { background-color: #0e1117; }
-    .stMetric { background-color: #161b22; border-radius: 10px; padding: 15px; border: 1px solid #30363d; }
-    [data-testid="stSidebar"] { background-color: #0d1117; border-right: 1px solid #30363d; }
+    .stMetric, .neural-card { 
+        background-color: #161b22; border-radius: 12px; 
+        padding: 20px; border: 1px solid #30363d; margin-bottom: 10px;
+    }
+    .summary-text { color: #8b949e; font-size: 14px; line-height: 1.6; }
+    .status-badge { background-color: #238636; color: white; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
     </style>
-""", unsafe_allow_value=True)
+""", unsafe_allow_html=True)
 
-# 5-second neural sync
 st_autorefresh(interval=5000, key="global_sync")
 
-# --- 2. FAILOVER INTELLIGENCE ---
-def run_brain_task(prompt, system_instr):
-    """Failover logic: 3 Flash -> 2.5 Flash -> 2.5 Flash-Lite"""
+# --- 2. MULTI-MODEL BRAIN ENGINE ---
+def run_brain_task(prompt, system_instr="You are Shield OS."):
     client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-    # Ordered by capability/rate-limit priority
+    # 2026 Failover Stack
     models = ["gemini-3-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
     
     for model_id in models:
@@ -38,114 +39,70 @@ def run_brain_task(prompt, system_instr):
             )
             return resp.text, model_id
         except Exception:
-            continue # Try next model if rate limited or down
-    return "🛡️ Error: All neural pathways saturated. Please try in 60s.", "None"
+            continue 
+    return "🛡️ Error: All neural pathways saturated.", "None"
 
 # --- 3. DATA PERSISTENCE ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-def load_all():
-    try:
-        return conn.read(worksheet="Log", ttl=0), conn.read(worksheet="Profile", ttl=0), conn.read(worksheet="WeightLog", ttl=0)
-    except: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+def load_data():
+    return conn.read(worksheet="Log", ttl=0), conn.read(worksheet="Profile", ttl=0), conn.read(worksheet="WeightLog", ttl=0)
 
-# --- 4. AUTHENTICATION FLOW ---
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
+# --- 4. AUTH & CORE LOGIC ---
+if "logged_in" not in st.session_state: st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
-    cols = st.columns([1, 2, 1])
-    with cols[1]:
-        st.title("🛡️ Shield OS Login")
-        with st.container(border=True):
-            e = st.text_input("Email")
-            p = st.text_input("Password", type="password")
-            if st.button("Initialize System", use_container_width=True):
-                profiles_df = conn.read(worksheet="Profile", ttl=0)
-                user = profiles_df[(profiles_df['Email'] == e) & (profiles_df['Password'] == p)]
-                if not user.empty:
-                    st.session_state.logged_in = True
-                    st.session_state.user_email = e
-                    st.rerun()
-                else: st.error("Invalid neural signature (Login Failed).")
+    # ... [Login UI from previous code]
     st.stop()
 
-# --- 5. LOGGED-IN HUB ---
-log_df, profiles_df, weight_df = load_all()
+log_df, profiles_df, weight_df = load_data()
 u_p = profiles_df[profiles_df['Email'] == st.session_state.user_email].iloc[0].to_dict()
 
-# Sidebar Navigation
+# --- 5. NEURAL HEALTH SUMMARY GENERATOR ---
+def get_neural_summary():
+    recent_weight = weight_df.tail(3).to_string()
+    recent_meals = log_df.tail(5).to_string()
+    prompt = f"Analyze this data: Target: {u_p['Target_Weight']}kg. Recent Weight: {recent_weight}. Recent Meals: {recent_meals}. Give a 2-sentence tactical health summary."
+    summary, model = run_brain_task(prompt, "You are a concise Health Strategist.")
+    return summary
+
+# --- 6. DASHBOARD UI ---
 with st.sidebar:
     st.title("🛡️ Operations")
-    nav = st.radio("Access Level", ["📊 Visual Analytics", "🧠 Shield Brain", "👤 Profile Info"])
-    st.divider()
-    if st.button("Deactivate System"):
-        st.session_state.logged_in = False
-        st.rerun()
+    nav = st.radio("Access Level", ["📊 Visual Analytics", "🧠 Shield Brain"])
 
-# --- 6. PAGE: ANALYTICS ---
 if nav == "📊 Visual Analytics":
     st.title("Neural Health Monitoring")
-    
-    # ROW 1: MACRO RINGS
-    st.subheader("Daily Intake vs. AI Targets")
-    today_log = log_df[pd.to_datetime(log_df['Date']).dt.date == datetime.now().date()]
+
+    # NEW: NEURAL SUMMARY CARD
+    with st.container():
+        st.markdown('<div class="neural-card">', unsafe_allow_html=True)
+        st.markdown(f"**NEURAL STATUS** <span class='status-badge'>AI Active</span>", unsafe_allow_html=True)
+        if st.button("Generate Fresh Insight"):
+            summary = get_neural_summary()
+            st.markdown(f"<p class='summary-text'>{summary}</p>", unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # MACRO RINGS
     m_cols = st.columns(3)
-    # Target Data from Profile (Brains Logic)
-    targets = [('Protein', 'Goal_Protein', '#FF2D55'), ('Carbs', 'Goal_Carbs', '#007AFF'), ('Fat', 'Goal_Fat', '#FFCC00')]
+    today_log = log_df[pd.to_datetime(log_df['Date']).dt.date == datetime.now().date()]
+    macros = [('Protein', 'Goal_Protein', '#FF2D55'), ('Carbs', 'Goal_Carbs', '#007AFF'), ('Fat', 'Goal_Fat', '#FFCC00')]
     
-    for i, (name, key, color) in enumerate(targets):
-        actual = today_log[name].sum() if not today_log.empty else 0
-        goal = u_p.get(key, 100)
-        progress = min(actual/goal, 1.0) if goal > 0 else 0
-        
-        fig = go.Figure(go.Pie(values=[progress, 1-progress], hole=0.8, marker=dict(colors=[color, '#1c1c1e']), textinfo='none'))
-        fig.update_layout(showlegend=False, height=200, margin=dict(t=0,b=0,l=10,r=10),
-                          annotations=[dict(text=f"<b>{int(actual)}g</b><br>{name}", x=0.5, y=0.5, showarrow=False, font_size=14)])
+    for i, (name, key, color) in enumerate(macros):
+        act = today_log[name].sum() if not today_log.empty else 0
+        target = u_p.get(key, 100)
+        pct = min(act/target, 1.0) if target > 0 else 0
+        fig = go.Figure(go.Pie(values=[pct, 1-pct], hole=0.8, marker=dict(colors=[color, '#1c1c1e']), textinfo='none'))
+        fig.update_layout(showlegend=False, height=180, margin=dict(t=0,b=0,l=0,r=0),
+                          annotations=[dict(text=f"<b>{int(act)}g</b>", x=0.5, y=0.5, showarrow=False, font_size=18)])
         m_cols[i].plotly_chart(fig, use_container_width=True)
 
-    # ROW 2: WEIGHT PATHWAY
-    st.subheader("Weight Trajectory: Actual vs. Planned")
+    # WEIGHT PATHWAY
     if not weight_df.empty:
         weight_df['Date'] = pd.to_datetime(weight_df['Date'])
         fig_w = go.Figure()
-        # Actual Line
-        fig_w.add_trace(go.Scatter(x=weight_df['Date'], y=weight_df['Weight'], name="Actual Weight", line=dict(color='#007AFF', width=4)))
-        # Brain's Planned Path
-        start_date = weight_df['Date'].min()
-        goal_date = pd.to_datetime(u_p.get('Goal_Date', datetime.now()))
-        fig_w.add_trace(go.Scatter(x=[start_date, goal_date], y=[u_p.get('Starting_Weight', u_p['Weight']), u_p['Target_Weight']], 
-                                   name="AI Target Path", line=dict(dash='dash', color='#86868B')))
+        fig_w.add_trace(go.Scatter(x=weight_df['Date'], y=weight_df['Weight'], name="Actual", line=dict(color='#007AFF', width=4)))
+        fig_w.add_trace(go.Scatter(x=[weight_df['Date'].min(), pd.to_datetime(u_p['Goal_Date'])], 
+                                   y=[u_p['Starting_Weight'], u_p['Target_Weight']], 
+                                   name="AI Path", line=dict(dash='dash', color='#86868B')))
         st.plotly_chart(fig_w, use_container_width=True)
-
-# --- 7. PAGE: BRAIN (FAILOVER ENABLED) ---
-elif nav == "🧠 Shield Brain":
-    st.title("Neural Interface")
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
-
-    for m in st.session_state.chat_history:
-        with st.chat_message(m["role"]): st.markdown(m["content"])
-
-    if prompt := st.chat_input("Sync goals or log meal..."):
-        st.session_state.chat_history.append({"role": "user", "content": prompt})
-        with st.chat_message("user"): st.markdown(prompt)
-        
-        with st.spinner("AI Thinking..."):
-            sys_instr = f"You are Shield OS. User: {u_p['Name']}, Weight: {u_p['Weight']}kg. Update targets if asked."
-            response, used_model = run_brain_task(prompt, sys_instr)
-            
-            # Logic for updating Sheet if 'sync' or 'goal' mentioned
-            if "sync" in prompt.lower():
-                # Neural math for targets
-                cal_goal = int((10 * u_p['Weight'] + 6.25 * u_p['Height'] - 5 * u_p['Age']) * 1.3)
-                profiles_df.loc[profiles_df['Email'] == u_p['Email'], ['Goal_Calories', 'Goal_Protein', 'Goal_Date']] = [cal_goal, int(cal_goal*0.3/4), (datetime.now()+timedelta(days=90)).date()]
-                conn.update(worksheet="Profile", data=profiles_df)
-                response += f" (Processed by {used_model})"
-
-            st.session_state.chat_history.append({"role": "assistant", "content": response})
-            with st.chat_message("assistant"): st.markdown(response)
-
-elif nav == "👤 Profile Info":
-    st.title("User Biometrics")
-    st.table(pd.DataFrame([u_p]).T.rename(columns={0: "Neural Value"}))
