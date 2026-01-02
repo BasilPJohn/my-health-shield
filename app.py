@@ -7,8 +7,8 @@ import pandas as pd
 import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 
-# --- 1. SLATE GREY UI ARCHITECTURE ---
-st.set_page_config(page_title="Shield OS v11", page_icon="🛡️", layout="wide")
+# --- 1. UI ARCHITECTURE (Slate Grey & High Visibility) ---
+st.set_page_config(page_title="Shield OS v12", page_icon="🛡️", layout="wide")
 
 st.markdown("""
     <style>
@@ -31,18 +31,36 @@ st.markdown("""
         box-shadow: 0 8px 30px rgba(0,0,0,0.4);
     }
     
-    /* Typography Visibility */
+    /* Typography Fixes */
     h1, h2, h3, label { color: #ffffff !important; font-weight: 700 !important; }
     p, .stMarkdown { color: #f2f2f7 !important; }
     </style>
 """, unsafe_allow_html=True)
 
-st_autorefresh(interval=5000, key="global_sync")
+# UI Refresh only (every 10 seconds to save quota)
+st_autorefresh(interval=10000, key="ui_refresh")
 
-# --- 2. FAILOVER NEURAL BRAIN ---
+# --- 2. QUOTA-SAFE DATA ENGINE ---
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+@st.cache_data(ttl=60)  # Caches data for 60 seconds to avoid 429 Errors
+def get_shield_data_cached():
+    try:
+        log = conn.read(worksheet="Log", ttl=0)
+        prof = conn.read(worksheet="Profile", ttl=0)
+        weight = conn.read(worksheet="WeightLog", ttl=0)
+        
+        # Scrub Headers: Standardize to lowercase and remove spaces (Prevents KeyError)
+        for df in [log, prof, weight]:
+            df.columns = [str(c).strip().lower() for c in df.columns]
+            
+        return log, prof, weight
+    except Exception as e:
+        return None, None, None
+
+# --- 3. FAILOVER NEURAL BRAIN ---
 def run_brain_task(prompt):
     client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-    # 2026 Model Failover Stack
     models = ["gemini-2.0-flash", "gemini-1.5-flash"]
     for m in models:
         try:
@@ -51,42 +69,28 @@ def run_brain_task(prompt):
         except: continue
     return "Neural links saturated.", "None"
 
-# --- 3. HARDENED DATA LOADER (KeyError Prevention) ---
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-def get_shield_data():
-    try:
-        # Load all sheets
-        log = conn.read(worksheet="Log", ttl=0)
-        prof = conn.read(worksheet="Profile", ttl=0)
-        weight = conn.read(worksheet="WeightLog", ttl=0)
-        
-        # Scrub and Standardize Headers
-        for df in [log, prof, weight]:
-            df.columns = [str(c).strip().lower() for c in df.columns]
-            
-        return log, prof, weight
-    except Exception as e:
-        st.error(f"⚠️ Connection Error: {e}")
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-
-# --- 4. AUTH & SESSION CONTROL ---
+# --- 4. SESSION & BOOT ---
 if "page" not in st.session_state: st.session_state.page = "Dashboard"
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
 
-log_df, prof_df, weight_df = get_shield_data()
+log_df, prof_df, weight_df = get_shield_data_cached()
 
-# EMERGENCY KEY CHECK
-if not prof_df.empty and 'email' not in prof_df.columns:
-    st.error("DATABASE SCHEMA ERROR")
-    st.write("Found Columns:", list(prof_df.columns))
-    st.info("Ensure your 'Profile' tab has 'Email' in the first row.")
+# Check for API block
+if log_df is None:
+    st.error("🛡️ Shield Offline: Google API Quota Exceeded. System cooling down... (Wait 60s)")
     st.stop()
 
+# Check for Header Health
+if 'email' not in prof_df.columns:
+    st.error("DATABASE SCHEMA ERROR: 'email' column missing.")
+    st.info(f"Detected Headers: {list(prof_df.columns)}")
+    st.stop()
+
+# --- 5. AUTHENTICATION GATE ---
 if not st.session_state.logged_in:
     cols = st.columns([1, 1.5, 1])
     with cols[1]:
-        st.markdown("<h1 style='text-align: center;'>🛡️ Shield OS</h1>", unsafe_allow_html=True)
+        st.markdown("<h1 style='text-align: center; margin-top:50px;'>🛡️ Shield OS</h1>", unsafe_allow_html=True)
         with st.container(border=True):
             e_in = st.text_input("Neural ID (Email)").strip().lower()
             p_in = st.text_input("Access Key", type="password")
@@ -99,19 +103,22 @@ if not st.session_state.logged_in:
                 else: st.error("Access Denied: Invalid Signature")
     st.stop()
 
-# --- 5. LOGGED-IN CONTEXT ---
+# --- 6. COMMAND CENTER (Sidebar) ---
 u_p = prof_df[prof_df['email'] == st.session_state.user_email].iloc[0].to_dict()
 
 with st.sidebar:
-    st.markdown("<h2 style='color:#007aff; margin-bottom:20px;'>SHIELD OPERATIONS</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='color:#007aff; margin-bottom:20px;'>SHIELD OPS</h2>", unsafe_allow_html=True)
     if st.button("📊 Health Analytics"): st.session_state.page = "Dashboard"
     if st.button("🧠 Shield Brain"): st.session_state.page = "Brain"
     st.divider()
-    if st.button("🚪 Deactivate System"):
+    if st.button("🔄 Sync Live Data"): 
+        st.cache_data.clear()
+        st.rerun()
+    if st.button("🚪 Logout"):
         st.session_state.logged_in = False
         st.rerun()
 
-# --- 6. PAGE: DASHBOARD ---
+# --- 7. PAGE: DASHBOARD ---
 if st.session_state.page == "Dashboard":
     st.title(f"Operator: {u_p.get('name', 'User')}")
     
@@ -132,7 +139,7 @@ if st.session_state.page == "Dashboard":
         
         fig = go.Figure(go.Pie(values=[pct, 1-pct], hole=0.82, marker=dict(colors=[color, bg]), textinfo='none', sort=False))
         fig.update_layout(showlegend=False, height=230, margin=dict(t=0,b=0,l=0,r=0), paper_bgcolor='rgba(0,0,0,0)',
-                          annotations=[dict(text=f"<b style='color:white; font-size:26px;'>{int(act)}g</b><br><span style='color:#a1a1a6;'>{name}</span>", 
+                          annotations=[dict(text=f"<b style='color:white; font-size:24px;'>{int(act)}g</b><br><span style='color:#a1a1a6;'>{name}</span>", 
                                             x=0.5, y=0.5, showarrow=False)])
         r_cols[i].plotly_chart(fig, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
@@ -149,10 +156,9 @@ if st.session_state.page == "Dashboard":
         st.plotly_chart(fig_w, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 7. PAGE: BRAIN ---
+# --- 8. PAGE: BRAIN ---
 elif st.session_state.page == "Brain":
     st.title("Neural Interface")
-    st.info("Syncing biometric data and processing logs...")
     if prompt := st.chat_input("Log meal or weight update..."):
         with st.spinner("AI Thinking..."):
             res, m = run_brain_task(prompt)
