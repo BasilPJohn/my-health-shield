@@ -52,7 +52,7 @@ def shield_brain(user_input, context):
     User Input: "{user_input}"
     """
     try:
-        response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+        response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
         return response.text
     except Exception as e:
         return f"System Error: {str(e)}"
