@@ -1,13 +1,15 @@
 import streamlit as st
 from google import genai
 from google.genai import types
+import google.api_core.exceptions as google_exceptions
 from streamlit_gsheets import GSheetsConnection
 from datetime import datetime
 import json
 import pandas as pd
 from PIL import Image
+import time
 
-# --- 1. SESSION STATE & THEME ---
+# --- 1. SESSION STATE & UI THEME ---
 if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = False
 if "meal_input" not in st.session_state:
@@ -38,7 +40,6 @@ def apply_apple_theme():
             padding: 0.7rem 2rem; font-weight: 600; width: 100%; border: none;
         }}
         [data-testid="stMetricValue"] {{ color: {accent} !important; font-weight: 800; }}
-        .stTable {{ background-color: {card_bg}; border-radius: 15px; overflow: hidden; }}
         </style>
     """, unsafe_allow_html=True)
 
@@ -48,7 +49,7 @@ apply_apple_theme()
 client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- 3. SIDEBAR: PROFILE & THEME ---
+# --- 3. SIDEBAR: PROFILE ---
 with st.sidebar:
     st.markdown("### 🛡️ Shield Settings")
     if st.button("🌙 Dark Mode" if not st.session_state.dark_mode else "☀️ Light Mode"):
@@ -66,8 +67,8 @@ with st.sidebar:
     u_name = st.text_input("Name", value=p.get('Name', 'User'))
     u_age = st.number_input("Age", value=int(p.get('Age', 25)))
     u_height = st.number_input("Height (cm)", value=float(p.get('Height', 170.0)))
-    u_weight = st.number_input("Current Weight (kg)", value=float(p.get('Weight', 70.0)), step=0.1)
-    u_target = st.number_input("Target Weight (kg)", value=float(p.get('Target_Weight', 65.0)), step=0.1)
+    u_weight = st.number_input("Weight (kg)", value=float(p.get('Weight', 70.0)))
+    u_target = st.number_input("Target Weight (kg)", value=float(p.get('Target_Weight', 65.0)))
     
     if st.button("Update Profile & Log Weight"):
         new_p_df = pd.DataFrame([{"Name": u_name, "Age": u_age, "Height": u_height, "Weight": u_weight, "Target_Weight": u_target}])
@@ -89,8 +90,6 @@ with st.sidebar:
 
 # --- 4. MAIN INTERFACE ---
 st.title("Health Shield")
-st.write(f"Hello, **{u_name}**")
-
 tabs = st.tabs(["📸 Photo", "🎙️ Voice", "✏️ Type"])
 
 with tabs[0]:
@@ -99,9 +98,9 @@ with tabs[0]:
         st.session_state.meal_input = cam
         st.session_state.input_type = "image"
 with tabs[1]:
-    audio = st.audio_input("Describe your meal")
+    audio = st.audio_input("Describe meal")
     if audio: 
-        st.session_state.meal_input = "User provided audio meal description."
+        st.session_state.meal_input = "User provided audio description."
         st.session_state.input_type = "text"
 with tabs[2]:
     txt = st.text_input("Manual entry")
@@ -111,57 +110,61 @@ with tabs[2]:
 
 if st.button("🚀 Analyze & Log Meal"):
     if st.session_state.meal_input:
-        with st.spinner("AI Analysis in progress..."):
-            prompt = f"Dietitian for {u_name}. Goal: {u_target}kg. Analyze meal. Return JSON: {{'food': str, 'calories': int, 'protein': int, 'carbs': int, 'fat': int, 'note': str}}"
+        with st.spinner("Analyzing (Managing Quota)..."):
+            prompt = f"Dietitian for {u_name}. Analyze meal. Return JSON: {{'food': str, 'calories': int, 'protein': int, 'carbs': int, 'fat': int, 'note': str}}"
             
-            try:
-                # Prepare Model Inputs
-                input_content = [prompt]
-                if st.session_state.input_type == "image":
-                    input_content.append(Image.open(st.session_state.meal_input))
-                else:
-                    input_content.append(st.session_state.meal_input)
+            # Prepare Inputs
+            input_content = [prompt]
+            if st.session_state.input_type == "image":
+                input_content.append(Image.open(st.session_state.meal_input))
+            else:
+                input_content.append(st.session_state.meal_input)
 
-                # Execute Gemini Call
-                resp = client.models.generate_content(
-                    model="gemini-2.0-flash", 
-                    contents=input_content,
-                    config=types.GenerateContentConfig(response_mime_type="application/json")
-                )
-                data = json.loads(resp.text)
-                
-                # Update Sheet
-                new_meal = pd.DataFrame([{
-                    "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "Meal": data['food'], "Calories": data['calories'],
-                    "Protein": data['protein'], "Carbs": data['carbs'],
-                    "Fat": data['fat'], "Note": data['note']
-                }])
+            # --- SMART QUOTA HANDLING ---
+            success = False
+            models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash"]
+            
+            for model_id in models_to_try:
+                try:
+                    resp = client.models.generate_content(
+                        model=model_id, 
+                        contents=input_content,
+                        config=types.GenerateContentConfig(response_mime_type="application/json")
+                    )
+                    data = json.loads(resp.text)
+                    success = True
+                    break
+                except Exception as e:
+                    if "429" in str(e):
+                        st.warning(f"{model_id} quota full. Switching engines...")
+                        time.sleep(2) # Brief pause before trying fallback
+                        continue
+                    else:
+                        st.error(f"Error: {e}")
+                        break
+            
+            if success:
+                new_meal = pd.DataFrame([{"Date": datetime.now().strftime("%Y-%m-%d %H:%M"), "Meal": data['food'], "Calories": data['calories'], "Protein": data['protein'], "Carbs": data['carbs'], "Fat": data['fat'], "Note": data['note']}])
                 history = conn.read(worksheet="Log")
                 conn.update(worksheet="Log", data=pd.concat([history, new_meal], ignore_index=True))
-                
                 st.markdown(f"""<div class="apple-card"><h2 style='color:#007AFF'>{data['food']}</h2><h1>{data['calories']} kcal</h1><p>{data['note']}</p></div>""", unsafe_allow_html=True)
-                
-                # Clear for next entry
                 st.session_state.meal_input = None
-            except Exception as e:
-                st.error(f"Analysis failed: {e}")
+            else:
+                st.error("All AI engines are busy. Please wait 60 seconds and try again.")
     else:
-        st.warning("Please capture or describe a meal first.")
+        st.warning("Please provide a meal input first.")
 
-# --- 5. DASHBOARD & HISTORY ---
+# --- 5. DASHBOARD ---
 st.divider()
 c1, c2 = st.columns(2)
-
 with c1:
     st.markdown('<div class="apple-card">', unsafe_allow_html=True)
-    st.subheader("Weight History")
+    st.subheader("Weight Tracking")
     try:
         w_df = conn.read(worksheet="WeightLog")
         st.line_chart(w_df.set_index("Date")["Weight"], color="#007AFF")
-    except: st.info("No weight data found.")
+    except: st.info("No weight data.")
     st.markdown('</div>', unsafe_allow_html=True)
-
 with c2:
     st.markdown('<div class="apple-card">', unsafe_allow_html=True)
     st.subheader("Calorie Trends")
@@ -169,17 +172,5 @@ with c2:
         l_df = conn.read(worksheet="Log")
         l_df['Day'] = pd.to_datetime(l_df['Date']).dt.date
         st.bar_chart(l_df.groupby('Day')['Calories'].sum(), color="#34C759")
-    except: st.info("No meal data found.")
+    except: st.info("No meal data.")
     st.markdown('</div>', unsafe_allow_html=True)
-
-st.subheader("📝 Today's Meal Journal")
-try:
-    all_meals = conn.read(worksheet="Log")
-    today = datetime.now().strftime("%Y-%m-%d")
-    today_meals = all_meals[all_meals['Date'].str.contains(today)]
-    if not today_meals.empty:
-        st.dataframe(today_meals[['Date', 'Meal', 'Calories', 'Note']], use_container_width=True, hide_index=True)
-    else:
-        st.write("No meals logged today yet.")
-except:
-    st.write("Start logging to see your journal.")
